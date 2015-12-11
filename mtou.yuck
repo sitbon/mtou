@@ -1,0 +1,10 @@
+Usage: mtou
+
+Forward multicast UDP to unicast UDP.
+
+  -I, --iface=IFACE    Multicast listen interface.
+  -i, --in=HOST        Multicast source address.
+  -p, --port=PORT      Port to listen on.
+  -o, --out=HOST       Unicast destination address.
+  -P, --out-port=PORT  Port to send to.
+  -v, --verbose        Verbose output.
