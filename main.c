@@ -67,7 +67,7 @@ int main(int argc, char *argv[])
     struct sockaddr_in addr_bind;
     struct sockaddr_in addr_mcast;
     struct sockaddr_in addr_iface;
-    const struct sockaddr_in addr_local = { 0 };
+    const struct sockaddr_in addr_local = { .sin_family = AF_INET };
     struct sockaddr_in addr_out;
     struct ip_mreq mreq;
     param_t param;
@@ -181,6 +181,11 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
+    /*if (connect(fd_uc, (struct sockaddr *)&addr_out, sizeof(addr_out))) {
+        perror("connect");
+        exit(1);
+    }*/
+
     mreq.imr_interface = addr_iface.sin_addr;
     mreq.imr_multiaddr = addr_mcast.sin_addr;
 
@@ -275,7 +280,7 @@ static void *rx_thread(void *param)
 static void *tx_thread(void *param)
 {
     const param_t *const p = (param_t *)param;
-    const int fd = p->fd_mc;
+    const int fd = p->fd_uc;
     const struct sockaddr_in *const addr = &p->addr_out;
     msg_t *qmsg;
     ssize_t len;
