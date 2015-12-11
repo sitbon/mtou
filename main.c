@@ -9,7 +9,6 @@
 #include <sys/mman.h>
 #include <pthread.h>
 #include <time.h>
-#include <sys/prctl.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <ifaddrs.h>
@@ -68,6 +67,7 @@ int main(int argc, char *argv[])
     struct sockaddr_in addr_bind;
     struct sockaddr_in addr_mcast;
     struct sockaddr_in addr_iface;
+    const struct sockaddr_in addr_local = { 0 };
     struct sockaddr_in addr_out;
     struct ip_mreq mreq;
     param_t param;
@@ -158,12 +158,12 @@ int main(int argc, char *argv[])
     );
 
     if ((fd_mc = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        perror("socket");
+        perror("socket(fd_mc)");
         exit(1);
     }
 
     if ((fd_uc = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
-        perror("socket");
+        perror("socket(fd_uc)");
         exit(1);
     }
 
@@ -172,7 +172,12 @@ int main(int argc, char *argv[])
     setsockopt(fd_mc, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
 
     if (bind(fd_mc, (struct sockaddr *)&addr_bind, sizeof(addr_bind))) {
-        perror("bind");
+        perror("bind(fd_mc)");
+        exit(1);
+    }
+
+    if (bind(fd_uc, (struct sockaddr *)&addr_local, sizeof(addr_local))) {
+        perror("bind(fd_uc)");
         exit(1);
     }
 
@@ -230,7 +235,7 @@ static void *rx_thread(void *param)
 
     while (true) {
         src_len = sizeof(src);
-        len = recvfrom(fd, buf, MAX_DGRAM_LEN, MSG_NOSIGNAL | MSG_WAITALL, (struct sockaddr *)&src, &src_len);
+        len = recvfrom(fd, buf, MAX_DGRAM_LEN, MSG_WAITALL, (struct sockaddr *)&src, &src_len);
 
         if (len <= 0) {
             if (errno == ENOTCONN) {
@@ -294,7 +299,7 @@ static void *tx_thread(void *param)
         }
 
         send:
-        len = sendto(fd, qmsg->buf, qmsg->len, MSG_WAITALL | MSG_NOSIGNAL, (struct sockaddr *)addr, sizeof(*addr));
+        len = sendto(fd, qmsg->buf, qmsg->len, MSG_WAITALL, (struct sockaddr *)addr, sizeof(*addr));
 
         if (len != qmsg->len) {
             if (len < 0 && errno == EINTR) goto send;
