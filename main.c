@@ -41,7 +41,9 @@ typedef struct {
     int fd_mc;
     int fd_uc;
     struct sockaddr_in addr_out;
+    struct sockaddr_in addr_mc;
     bool verbose;
+    bool reverse;
 } param_t;
 
 static int udp_addr(struct addrinfo **addr, const char *host, const char *service, bool passive);
@@ -152,10 +154,17 @@ int main(int argc, char *argv[])
     strcpy(addr_mcast_str, inet_ntoa(addr_mcast.sin_addr));
     strcpy(addr_out_str, inet_ntoa(addr_out.sin_addr));
 
-    printf("<%s> %s:%u -> %s:%u\n",
-            addr_iface_str, addr_mcast_str, ntohs(addr_mcast.sin_port),
-            addr_out_str, ntohs(addr_out.sin_port)
-    );
+    if (argp->reverse_flag) {
+        printf("%s:%u -> <%s> %s:%u\n",
+                addr_out_str, ntohs(addr_out.sin_port),
+                addr_iface_str, addr_mcast_str, ntohs(addr_mcast.sin_port)
+        );
+    } else {
+        printf("<%s> %s:%u -> %s:%u\n",
+                addr_iface_str, addr_mcast_str, ntohs(addr_mcast.sin_port),
+                addr_out_str, ntohs(addr_out.sin_port)
+        );
+    }
 
     if ((fd_mc = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         perror("socket(fd_mc)");
@@ -170,15 +179,29 @@ int main(int argc, char *argv[])
     opt = 1;
     setsockopt(fd_mc, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     setsockopt(fd_mc, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+    setsockopt(fd_uc, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(fd_uc, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
 
-    if (bind(fd_mc, (struct sockaddr *)&addr_bind, sizeof(addr_bind))) {
-        perror("bind(fd_mc)");
-        exit(1);
-    }
+    if (argp->reverse_flag) {
+        if (bind(fd_mc, (struct sockaddr *)&addr_iface, sizeof(addr_iface))) {
+            perror("bind(fd_mc)");
+            exit(1);
+        }
 
-    if (bind(fd_uc, (struct sockaddr *)&addr_local, sizeof(addr_local))) {
-        perror("bind(fd_uc)");
-        exit(1);
+        if (bind(fd_uc, (struct sockaddr *)&addr_out, sizeof(addr_out))) {
+            perror("bind(fd_uc)");
+            exit(1);
+        }
+    } else {
+        if (bind(fd_mc, (struct sockaddr *)&addr_bind, sizeof(addr_bind))) {
+            perror("bind(fd_mc)");
+            exit(1);
+        }
+
+        if (bind(fd_uc, (struct sockaddr *)&addr_local, sizeof(addr_local))) {
+            perror("bind(fd_uc)");
+            exit(1);
+        }
     }
 
     /*if (connect(fd_uc, (struct sockaddr *)&addr_out, sizeof(addr_out))) {
@@ -194,10 +217,18 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    param.fd_mc = fd_mc;
-    param.fd_uc = fd_uc;
+    if (argp->reverse_flag) {
+        param.fd_mc = fd_uc;
+        param.fd_uc = fd_mc;
+    } else {
+        param.fd_mc = fd_mc;
+        param.fd_uc = fd_uc;
+    }
+
     param.addr_out = addr_out;
+    param.addr_mc = addr_mcast;
     param.verbose = argp->verbose_flag > 0;
+    param.reverse = argp->reverse_flag > 0;
 
     yuck_free(argp);
     start(&param);
@@ -249,7 +280,7 @@ static void *rx_thread(void *param)
             }
 
             if (errno) perror("recvfrom");
-            else fprintf(stderr, "mcast rx: len=%li\n", len);
+            else fprintf(stderr, "rx: len=%li\n", len);
             sleep(1);
             continue;
         }
@@ -281,7 +312,7 @@ static void *tx_thread(void *param)
 {
     const param_t *const p = (param_t *)param;
     const int fd = p->fd_uc;
-    const struct sockaddr_in *const addr = &p->addr_out;
+    const struct sockaddr_in *const addr = p->reverse ? &p->addr_mc : &p->addr_out;
     msg_t *qmsg;
     ssize_t len;
 
@@ -299,7 +330,7 @@ static void *tx_thread(void *param)
         pthread_mutex_unlock(&queue.lock);
 
         if (!qmsg) {
-            fprintf(stderr, "udp tx: msg == NULL\n");
+            fprintf(stderr, "tx: msg == NULL\n");
             continue;
         }
 
@@ -309,7 +340,7 @@ static void *tx_thread(void *param)
         if (len != qmsg->len) {
             if (len < 0 && errno == EINTR) goto send;
             if (errno) perror("sendto");
-            else fprintf(stderr, "udp tx: len=%li exp=%li\n", len, qmsg->len);
+            else fprintf(stderr, "tx: len=%li exp=%li\n", len, qmsg->len);
         }
 
         free(qmsg);

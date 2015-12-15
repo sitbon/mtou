@@ -8,3 +8,4 @@ Forward multicast UDP to unicast UDP.
   -o, --out=HOST       Unicast destination address.
   -P, --out-port=PORT  Port to send to.
   -v, --verbose        Verbose output.
+  -R, --reverse        Reverse packet direction.

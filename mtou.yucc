@@ -42,6 +42,7 @@ struct yuck_s {
 	char *out_arg;
 	char *out_port_arg;
 	unsigned int verbose_flag;
+	unsigned int reverse_flag;
 };
 
 
@@ -230,6 +231,8 @@ static int yuck_parse(yuck_t tgt[static 1U], int argc, char *argv[])
 				tgt->out_port_arg = arg ?: argv[++i];
 			} else if (yuck_streqp(op, "verbose")) {
 				tgt->verbose_flag++;
+			} else if (yuck_streqp(op, "reverse")) {
+				tgt->reverse_flag++;
 			} else {
 				/* grml */
 				fprintf(stderr, "mtou: unrecognized option `--%s'\n", op);
@@ -314,6 +317,9 @@ static int yuck_parse(yuck_t tgt[static 1U], int argc, char *argv[])
 			case 'v':
 				tgt->verbose_flag++;
 				break;
+			case 'R':
+				tgt->reverse_flag++;
+				break;
 			}
 			goto back_from_MTOU_CMD_NONE_shortopt;
 		}
@@ -356,6 +362,7 @@ static void yuck_free(yuck_t tgt[static 1U])
 	default:
 		break;
 	case MTOU_CMD_NONE:
+;
 ;
 ;
 ;
@@ -411,6 +418,7 @@ static void yuck_auto_help(const yuck_t src[static 1U])
   -o, --out=HOST        Unicast destination address.\n\
   -P, --out-port=PORT   Port to send to.\n\
   -v, --verbose         Verbose output.\n\
+  -R, --reverse         Reverse packet direction.\n\
 ");
 		break;
 
