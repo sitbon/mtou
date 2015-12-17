@@ -198,10 +198,10 @@ int main(int argc, char *argv[])
             exit(1);
         }
 
-        if (bind(fd_uc, (struct sockaddr *)&addr_local, sizeof(addr_local))) {
+        /*if (bind(fd_uc, (struct sockaddr *)&addr_local, sizeof(addr_local))) {
             perror("bind(fd_uc)");
             exit(1);
-        }
+        }*/
     }
 
     /*if (connect(fd_uc, (struct sockaddr *)&addr_out, sizeof(addr_out))) {
