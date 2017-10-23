@@ -19,8 +19,9 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <semaphore.h>
 
-#define MAX_QUEUE       16
+#define MAX_QUEUE       2048
 
 typedef struct {
     size_t len;
@@ -31,19 +32,17 @@ typedef struct {
     msg_t *msg[MAX_QUEUE];
     size_t cnt;
     pthread_mutex_t lock;
-    pthread_cond_t can_produce;
-    pthread_cond_t can_consume;
+    sem_t sem_produce;
+    sem_t sem_consume;
     pthread_t thr_prod;
     pthread_t thr_cons;
 } queue_t;
 
 typedef struct {
-    int fd_mc;
-    int fd_uc;
-    struct sockaddr_in addr_out;
-    struct sockaddr_in addr_mc;
+    int fd_rx;
+    int fd_tx;
+    struct sockaddr_in addr_tx;
     bool verbose;
-    bool reverse;
 } param_t;
 
 static int udp_addr(struct addrinfo **addr, const char *host, const char *service, bool passive);
@@ -57,8 +56,6 @@ static void *tx_thread(void *param);
 static queue_t queue = {
         .cnt = 0,
         .lock = PTHREAD_MUTEX_INITIALIZER,
-        .can_produce = PTHREAD_COND_INITIALIZER,
-        .can_consume = PTHREAD_COND_INITIALIZER
 };
 
 
@@ -66,30 +63,31 @@ int main(int argc, char *argv[])
 {
     yuck_t argp[1];
     struct addrinfo *addr_info = NULL;
-    struct sockaddr_in addr_bind;
-    struct sockaddr_in addr_mcast;
-    struct sockaddr_in addr_iface;
-    const struct sockaddr_in addr_local = { .sin_family = AF_INET };
-    struct sockaddr_in addr_out;
+    struct sockaddr_in addr_rx, addr_rx_if;
+    struct sockaddr_in addr_tx, addr_tx_if;
     struct ip_mreq mreq;
     param_t param;
-    int fd_mc, fd_uc, opt;
+    int fd_rx, fd_tx;
 
     yuck_parse(argp, argc, argv);
 
     if (argp->iface_arg && !strlen(argp->iface_arg)) {
-        fputs("interface is required\n", stderr);
+        fputs("input interface cannot be empty\n", stderr);
         exit(1);
     }
 
-    if (!argp->in_arg || !strlen(argp->in_arg)) {
-        fputs("input is required\n", stderr);
+    if ((!argp->in_arg || !strlen(argp->in_arg)) && !argp->iface_arg) {
+        fputs("input is required when input interface not given\n", stderr);
         exit(1);
     }
 
     if (!argp->port_arg || !strlen(argp->port_arg)) {
         fputs("port is required\n", stderr);
         exit(1);
+    }
+
+    if (argp->oface_arg && !strlen(argp->oface_arg)) {
+        fputs("output interface cannot be empty\n", stderr);
     }
 
     if (!argp->out_arg || !strlen(argp->out_arg)) {
@@ -101,27 +99,15 @@ int main(int argc, char *argv[])
         argp->out_port_arg = argp->port_arg;
     }
 
-    //printf("%s -> %s :: %s\n", argp->in_arg, argp->out_arg, argp->port_arg);
-
-    if (udp_addr(&addr_info, argp->out_arg, argp->out_port_arg, false)) {
-        exit(1);
-    }
-
-    addr_out = *(struct sockaddr_in *)addr_info->ai_addr;
-
-    if (udp_addr(&addr_info, argp->in_arg, argp->port_arg, false)) {
-        exit(1);
-    }
-
-    addr_bind = addr_mcast = *(struct sockaddr_in *)addr_info->ai_addr;
 
     if (udp_addr(&addr_info, "0.0.0.0", argp->port_arg, false)) {
         exit(1);
     }
 
-    addr_iface = *(struct sockaddr_in *)addr_info->ai_addr;
+    addr_tx_if = addr_rx_if = *(struct sockaddr_in *)addr_info->ai_addr;
+    addr_tx_if.sin_port = 0;
 
-    if (argp->iface_arg) {
+    if (argp->iface_arg || argp->oface_arg) {
         struct ifaddrs *addr;
 
         if (getifaddrs(&addr)) {
@@ -131,104 +117,120 @@ int main(int argc, char *argv[])
 
         while (addr) {
             if (!addr->ifa_addr || addr->ifa_addr->sa_family != AF_INET) goto next;
-            if (strcmp(argp->iface_arg, addr->ifa_name)) goto next;
 
             const in_addr_t in_addr = ntohl(((struct sockaddr_in *)addr->ifa_addr)->sin_addr.s_addr);
-            if (in_addr == INADDR_LOOPBACK || in_addr == INADDR_NONE || in_addr == INADDR_ANY) goto next;
 
-            addr_iface.sin_addr = ((struct sockaddr_in *)addr->ifa_addr)->sin_addr;
-            break;
+            if (in_addr == INADDR_NONE || in_addr == INADDR_ANY) goto next;
+
+            if (argp->iface_arg && !strcmp(argp->iface_arg, addr->ifa_name)) {
+                addr_rx_if.sin_addr = ((struct sockaddr_in *) addr->ifa_addr)->sin_addr;
+            }
+
+            if (argp->oface_arg && !strcmp(argp->oface_arg, addr->ifa_name)) {
+                addr_tx_if.sin_addr = ((struct sockaddr_in *) addr->ifa_addr)->sin_addr;
+            }
 
             next:
             addr = addr->ifa_next;
         }
 
-        if (!addr) {
-            fputs("no suitable interfaces found", stderr);
+        if (argp->iface_arg && !addr_rx_if.sin_addr.s_addr) {
+            fputs("no matching suitable input interface found\n", stderr);
+            exit(1);
+        }
+
+        if (argp->oface_arg && !addr_tx_if.sin_addr.s_addr) {
+            fputs("no matching suitable output interface found\n", stderr);
             exit(1);
         }
     }
 
-    char addr_iface_str[64], addr_mcast_str[64], addr_out_str[64];
-    strcpy(addr_iface_str, inet_ntoa(addr_iface.sin_addr));
-    strcpy(addr_mcast_str, inet_ntoa(addr_mcast.sin_addr));
-    strcpy(addr_out_str, inet_ntoa(addr_out.sin_addr));
+    if (argp->in_arg) {
+        if (udp_addr(&addr_info, argp->in_arg, argp->port_arg, false)) {
+            exit(1);
+        }
 
-    if (argp->reverse_flag) {
-        printf("%s:%u -> <%s> %s:%u\n",
-                addr_out_str, ntohs(addr_out.sin_port),
-                addr_iface_str, addr_mcast_str, ntohs(addr_mcast.sin_port)
-        );
+        addr_rx = *(struct sockaddr_in *) addr_info->ai_addr;
     } else {
-        printf("<%s> %s:%u -> %s:%u\n",
-                addr_iface_str, addr_mcast_str, ntohs(addr_mcast.sin_port),
-                addr_out_str, ntohs(addr_out.sin_port)
-        );
+        addr_rx = addr_rx_if;
     }
 
-    if ((fd_mc = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        perror("socket(fd_mc)");
+    if (udp_addr(&addr_info, argp->out_arg, argp->out_port_arg, false)) {
         exit(1);
     }
 
-    if ((fd_uc = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
-        perror("socket(fd_uc)");
+    addr_tx = *(struct sockaddr_in *)addr_info->ai_addr;
+
+    if ((fd_rx = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
+        perror("socket(rx)");
         exit(1);
     }
 
-    opt = 1;
-    setsockopt(fd_mc, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    setsockopt(fd_mc, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
-    setsockopt(fd_uc, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    setsockopt(fd_uc, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+    if ((fd_tx = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
+        perror("socket(tx)");
+        exit(1);
+    }
 
-    if (argp->reverse_flag) {
-        if (bind(fd_mc, (struct sockaddr *)&addr_iface, sizeof(addr_iface))) {
-            perror("bind(fd_mc)");
+    int opt = 1;
+    setsockopt(fd_rx, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(fd_rx, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+    setsockopt(fd_tx, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    // [Multicast] sender binds to outgoing interface
+
+    if (bind(fd_tx, (struct sockaddr *)&addr_tx_if, sizeof(addr_tx_if))) {
+        perror("bind(tx)");
+        exit(1);
+    }
+
+    socklen_t socklen = sizeof(addr_tx_if);
+    getsockname(fd_tx, (struct sockaddr *) &addr_tx_if, &socklen);
+
+    // [Multicast] receiver binds to source address
+
+    if (bind(fd_rx, (struct sockaddr *)&addr_rx, sizeof(addr_rx))) {
+        perror("bind(rx)");
+        exit(1);
+    }
+
+    if (IN_MULTICAST(ntohl(addr_rx.sin_addr.s_addr))) {
+        mreq.imr_interface = addr_rx_if.sin_addr;
+        mreq.imr_multiaddr = addr_rx.sin_addr;
+
+        if (setsockopt(fd_rx, SOL_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq))) {
+            perror("setsockopt(rx/IP_ADD_MEMBERSHIP)");
             exit(1);
         }
 
-        if (bind(fd_uc, (struct sockaddr *)&addr_out, sizeof(addr_out))) {
-            perror("bind(fd_uc)");
+    } else if (argp->iface_arg && argp->in_arg) {
+        fputs("ignoring input interface\n", stderr);
+    }
+
+    if (IN_MULTICAST(ntohl(addr_tx.sin_addr.s_addr))) {
+        mreq.imr_interface = addr_tx_if.sin_addr;
+        mreq.imr_multiaddr = addr_tx.sin_addr;
+
+        if (setsockopt(fd_tx, SOL_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq))) {
+            perror("setsockopt(tx/IP_ADD_MEMBERSHIP)");
             exit(1);
         }
-    } else {
-        if (bind(fd_mc, (struct sockaddr *)&addr_bind, sizeof(addr_bind))) {
-            perror("bind(fd_mc)");
-            exit(1);
-        }
-
-        /*if (bind(fd_uc, (struct sockaddr *)&addr_local, sizeof(addr_local))) {
-            perror("bind(fd_uc)");
-            exit(1);
-        }*/
     }
 
-    /*if (connect(fd_uc, (struct sockaddr *)&addr_out, sizeof(addr_out))) {
-        perror("connect");
-        exit(1);
-    }*/
-
-    mreq.imr_interface = addr_iface.sin_addr;
-    mreq.imr_multiaddr = addr_mcast.sin_addr;
-
-    if (setsockopt(fd_mc, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq))) {
-        perror("setsockopt");
-        exit(1);
-    }
-
-    if (argp->reverse_flag) {
-        param.fd_mc = fd_uc;
-        param.fd_uc = fd_mc;
-    } else {
-        param.fd_mc = fd_mc;
-        param.fd_uc = fd_uc;
-    }
-
-    param.addr_out = addr_out;
-    param.addr_mc = addr_mcast;
+    param.fd_rx = fd_rx;
+    param.fd_tx = fd_tx;
+    param.addr_tx = addr_tx;
     param.verbose = argp->verbose_flag > 0;
-    param.reverse = argp->reverse_flag > 0;
+
+    char addr_rx_if_str[64], addr_tx_if_str[64], addr_rx_str[64], addr_tx_str[64];
+    strcpy(addr_rx_if_str, inet_ntoa(addr_rx_if.sin_addr));
+    strcpy(addr_tx_if_str, inet_ntoa(addr_tx_if.sin_addr));
+    strcpy(addr_rx_str, inet_ntoa(addr_rx.sin_addr));
+    strcpy(addr_tx_str, inet_ntoa(addr_tx.sin_addr));
+
+    printf("<%s> %s:%u -> <%s:%u> %s:%u\n",
+           addr_rx_if_str, addr_rx_str, ntohs(addr_rx.sin_port),
+           addr_tx_if_str, ntohs(addr_tx_if.sin_port), addr_tx_str, ntohs(addr_tx.sin_port)
+    );
 
     yuck_free(argp);
     start(&param);
@@ -239,6 +241,9 @@ int main(int argc, char *argv[])
 
 static void start(param_t *param)
 {
+    sem_init(&queue.sem_produce, 0, MAX_QUEUE);
+    sem_init(&queue.sem_consume, 0, 0);
+
     pthread_create(&queue.thr_prod, NULL, rx_thread, param);
     pthread_create(&queue.thr_cons, NULL, tx_thread, param);
 }
@@ -259,7 +264,7 @@ static void stop(void)
 static void *rx_thread(void *param)
 {
     const param_t *const p = (param_t *)param;
-    const int fd = p->fd_mc;
+    const int fd = p->fd_rx;
     const bool verbose = p->verbose;
     msg_t *qmsg;
     buf_t buf[MAX_DGRAM_LEN];
@@ -271,7 +276,7 @@ static void *rx_thread(void *param)
 
     while (true) {
         src_len = sizeof(src);
-        len = recvfrom(fd, buf, MAX_DGRAM_LEN, MSG_WAITALL, (struct sockaddr *)&src, &src_len);
+        len = recvfrom(fd, buf, MAX_DGRAM_LEN, 0, (struct sockaddr *)&src, &src_len);
 
         if (len <= 0) {
             if (errno == ENOTCONN) {
@@ -286,23 +291,22 @@ static void *rx_thread(void *param)
         }
 
         if (verbose) {
-            if (src_len >= sizeof(src)) printf("[%s:%u] ", inet_ntoa(src.sin_addr), src.sin_port);
+            if (src_len >= sizeof(src)) printf("[%s:%u] ", inet_ntoa(src.sin_addr), ntohs(src.sin_port));
             print_hex(stdout, buf, (u32)len, false);
+            fflush(stdout);
         }
 
         qmsg = malloc(sizeof(msg_t) + len);
         qmsg->len = (size_t)len;
         memcpy(qmsg->buf, buf, qmsg->len);
+
+        sem_wait(&queue.sem_produce);
         pthread_mutex_lock(&queue.lock);
 
-        while (queue.cnt >= MAX_QUEUE)
-            pthread_cond_wait(&queue.can_produce, &queue.lock);
+        queue.msg[queue.cnt++] = qmsg;
 
-        queue.msg[queue.cnt] = qmsg;
-        queue.cnt++;
-
-        pthread_cond_signal(&queue.can_consume);
         pthread_mutex_unlock(&queue.lock);
+        sem_post(&queue.sem_consume);
     }
 
     return NULL;
@@ -311,23 +315,22 @@ static void *rx_thread(void *param)
 static void *tx_thread(void *param)
 {
     const param_t *const p = (param_t *)param;
-    const int fd = p->fd_uc;
-    const struct sockaddr_in *const addr = p->reverse ? &p->addr_mc : &p->addr_out;
+    const int fd = p->fd_tx;
+    const struct sockaddr_in *const addr = &p->addr_tx;
     msg_t *qmsg;
     ssize_t len;
 
     set_thread_prio(false);
 
     while (true) {
+        sem_wait(&queue.sem_consume);
         pthread_mutex_lock(&queue.lock);
-
-        while (!queue.cnt)
-            pthread_cond_wait(&queue.can_consume, &queue.lock);
 
         qmsg = queue.msg[--queue.cnt];
         queue.msg[queue.cnt + 1] = NULL;
-        pthread_cond_signal(&queue.can_produce);
+
         pthread_mutex_unlock(&queue.lock);
+        sem_post(&queue.sem_produce);
 
         if (!qmsg) {
             fprintf(stderr, "tx: msg == NULL\n");
@@ -357,7 +360,7 @@ static int udp_addr(struct addrinfo **addr, const char *host, const char *servic
             .ai_protocol = IPPROTO_UDP,
             .ai_flags = AI_ADDRCONFIG
     };
-    
+
     if (passive) hints.ai_flags |= AI_PASSIVE;
 
     const int err = getaddrinfo(host, service, &hints, addr);

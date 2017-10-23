@@ -3,6 +3,18 @@ mtou
 
 Multicast-unicast forwarding tool.
 
+```
+Usage: mtou <-I IFACE | -i ADDR> <-p PORT> <-o ADDR> ...
+
+  -I, --iface=IFACE    Incoming interface.
+  -i, --in=ADDR        Source address.
+  -p, --port=PORT      Port to listen on.
+  -O, --oface=IFACE    Outgoing interface.
+  -o, --out=ADDR       Destination address.
+  -P, --out-port=PORT  Port to send to.
+  -v, --verbose        Verbose output.
+```
+
 Requirements
 =============
 

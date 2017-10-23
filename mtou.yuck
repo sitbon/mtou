@@ -1,11 +1,11 @@
 Usage: mtou
 
-Forward multicast UDP to unicast UDP.
+Multicast-unicast forwarding tool.
 
-  -I, --iface=IFACE    Multicast listen interface.
-  -i, --in=HOST        Multicast source address.
+  -I, --iface=IFACE    Incoming interface.
+  -i, --in=ADDR        Source address.
   -p, --port=PORT      Port to listen on.
-  -o, --out=HOST       Unicast destination address.
+  -O, --oface=IFACE    Outgoing interface.
+  -o, --out=ADDR       Destination address.
   -P, --out-port=PORT  Port to send to.
   -v, --verbose        Verbose output.
-  -R, --reverse        Reverse packet direction.

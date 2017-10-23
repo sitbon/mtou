@@ -39,10 +39,10 @@ struct yuck_s {
 	char *iface_arg;
 	char *in_arg;
 	char *port_arg;
+	char *oface_arg;
 	char *out_arg;
 	char *out_port_arg;
 	unsigned int verbose_flag;
-	unsigned int reverse_flag;
 };
 
 
@@ -225,14 +225,14 @@ static int yuck_parse(yuck_t tgt[static 1U], int argc, char *argv[])
 				tgt->in_arg = arg ?: argv[++i];
 			} else if (yuck_streqp(op, "port")) {
 				tgt->port_arg = arg ?: argv[++i];
+			} else if (yuck_streqp(op, "oface")) {
+				tgt->oface_arg = arg ?: argv[++i];
 			} else if (yuck_streqp(op, "out")) {
 				tgt->out_arg = arg ?: argv[++i];
 			} else if (yuck_streqp(op, "out-port")) {
 				tgt->out_port_arg = arg ?: argv[++i];
 			} else if (yuck_streqp(op, "verbose")) {
 				tgt->verbose_flag++;
-			} else if (yuck_streqp(op, "reverse")) {
-				tgt->reverse_flag++;
 			} else {
 				/* grml */
 				fprintf(stderr, "mtou: unrecognized option `--%s'\n", op);
@@ -304,6 +304,11 @@ static int yuck_parse(yuck_t tgt[static 1U], int argc, char *argv[])
 					? (op += strlen(arg), arg)
 					: argv[++i];
 				break;
+			case 'O':
+				tgt->oface_arg = *arg
+					? (op += strlen(arg), arg)
+					: argv[++i];
+				break;
 			case 'o':
 				tgt->out_arg = *arg
 					? (op += strlen(arg), arg)
@@ -316,9 +321,6 @@ static int yuck_parse(yuck_t tgt[static 1U], int argc, char *argv[])
 				break;
 			case 'v':
 				tgt->verbose_flag++;
-				break;
-			case 'R':
-				tgt->reverse_flag++;
 				break;
 			}
 			goto back_from_MTOU_CMD_NONE_shortopt;
@@ -384,7 +386,7 @@ static void yuck_auto_usage(const yuck_t src[static 1U])
 	YUCK_NOCMD:
 		puts("Usage: mtou [OPTION]...\n\
 \n\
-Forward multicast UDP to unicast UDP.\n\
+Multicast-unicast forwarding tool.\n\
 ");
 		break;
 
@@ -412,13 +414,13 @@ static void yuck_auto_help(const yuck_t src[static 1U])
 		puts("\
   -?, --help            display this help and exit\n\
   -V, --version         output version information and exit\n\
-  -I, --iface=IFACE     Multicast listen interface.\n\
-  -i, --in=HOST         Multicast source address.\n\
+  -I, --iface=IFACE     Incoming interface.\n\
+  -i, --in=ADDR         Source address.\n\
   -p, --port=PORT       Port to listen on.\n\
-  -o, --out=HOST        Unicast destination address.\n\
+  -O, --oface=IFACE     Outgoing interface.\n\
+  -o, --out=ADDR        Destination address.\n\
   -P, --out-port=PORT   Port to send to.\n\
   -v, --verbose         Verbose output.\n\
-  -R, --reverse         Reverse packet direction.\n\
 ");
 		break;
 
