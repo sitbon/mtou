@@ -39,7 +39,10 @@ class Udp(object):
             self.dest = (addr_ip, port)
 
             if is_multicast:
-                self.sock.bind((addr, 0))
+                if iface_ip == "0.0.0.0":
+                    self.sock.bind((addr, 0))
+                else:
+                    self.sock.bind((iface_ip, 0))
             else:
                 self.sock.bind((iface_ip, 0))
 
