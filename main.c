@@ -21,21 +21,25 @@
 #include <arpa/inet.h>
 #include <semaphore.h>
 
+
 #define MAX_QUEUE       2048
 
-typedef struct {
-    size_t len;
-    buf_t buf[];
-} msg_t;
 
 typedef struct {
-    msg_t *msg[MAX_QUEUE];
-    size_t cnt;
-    pthread_mutex_t lock;
-    sem_t sem_produce;
+    size_t size;
+    buf_t *data;
+
+} queue_entry_t;
+
+typedef struct {
+    queue_entry_t entry[MAX_QUEUE];
+    u32 qi_prod;
+    u32 qi_cons;
+
     sem_t sem_consume;
     pthread_t thr_prod;
     pthread_t thr_cons;
+
 } queue_t;
 
 typedef struct {
@@ -43,6 +47,7 @@ typedef struct {
     int fd_tx;
     struct sockaddr_in addr_tx;
     bool verbose;
+
 } param_t;
 
 static int udp_addr(struct addrinfo **addr, const char *host, const char *service, bool passive);
@@ -54,8 +59,8 @@ static void *tx_thread(void *param);
 
 
 static queue_t queue = {
-        .cnt = 0,
-        .lock = PTHREAD_MUTEX_INITIALIZER,
+        .qi_prod = 0,
+        .qi_cons = 0
 };
 
 
@@ -241,7 +246,6 @@ int main(int argc, char *argv[])
 
 static void start(param_t *param)
 {
-    sem_init(&queue.sem_produce, 0, MAX_QUEUE);
     sem_init(&queue.sem_consume, 0, 0);
 
     pthread_create(&queue.thr_prod, NULL, rx_thread, param);
@@ -266,7 +270,7 @@ static void *rx_thread(void *param)
     const param_t *const p = (param_t *)param;
     const int fd = p->fd_rx;
     const bool verbose = p->verbose;
-    msg_t *qmsg;
+    queue_entry_t *entry;
     buf_t buf[MAX_DGRAM_LEN];
     struct sockaddr_in src;
     socklen_t src_len;
@@ -296,20 +300,19 @@ static void *rx_thread(void *param)
             fflush(stdout);
         }
 
-        qmsg = malloc(sizeof(msg_t) + len);
-        qmsg->len = (size_t)len;
-        memcpy(qmsg->buf, buf, qmsg->len);
+        while ((queue.qi_prod + 1) % MAX_QUEUE == queue.qi_cons) {
+            usleep(0);
+        }
 
-        sem_wait(&queue.sem_produce);
-        pthread_mutex_lock(&queue.lock);
+        entry = &queue.entry[queue.qi_prod];
 
-        queue.msg[queue.cnt++] = qmsg;
+        entry->size = (size_t) len;
+        entry->data = calloc(1, entry->size);
+        memcpy(entry->data, buf, entry->size);
 
-        pthread_mutex_unlock(&queue.lock);
+        queue.qi_prod = (queue.qi_prod + 1) % MAX_QUEUE;
         sem_post(&queue.sem_consume);
     }
-
-    return NULL;
 }
 
 static void *tx_thread(void *param)
@@ -317,39 +320,29 @@ static void *tx_thread(void *param)
     const param_t *const p = (param_t *)param;
     const int fd = p->fd_tx;
     const struct sockaddr_in *const addr = &p->addr_tx;
-    msg_t *qmsg;
+    queue_entry_t *entry;
     ssize_t len;
 
     set_thread_prio(false);
 
     while (true) {
         sem_wait(&queue.sem_consume);
-        pthread_mutex_lock(&queue.lock);
 
-        qmsg = queue.msg[--queue.cnt];
-        queue.msg[queue.cnt + 1] = NULL;
-
-        pthread_mutex_unlock(&queue.lock);
-        sem_post(&queue.sem_produce);
-
-        if (!qmsg) {
-            fprintf(stderr, "tx: msg == NULL\n");
-            continue;
-        }
+        entry = &queue.entry[queue.qi_cons];
 
         send:
-        len = sendto(fd, qmsg->buf, qmsg->len, MSG_WAITALL, (struct sockaddr *)addr, sizeof(*addr));
+        len = sendto(fd, entry->data, entry->size, MSG_WAITALL, (struct sockaddr *)addr, sizeof(*addr));
 
-        if (len != qmsg->len) {
+        if (len != entry->size) {
             if (len < 0 && errno == EINTR) goto send;
             if (errno) perror("sendto");
-            else fprintf(stderr, "tx: len=%li exp=%li\n", len, qmsg->len);
+            else fprintf(stderr, "tx: len=%li exp=%li\n", len, entry->size);
         }
 
-        free(qmsg);
-    }
+        free(entry->data);
 
-    return NULL;
+        queue.qi_cons = (queue.qi_cons + 1) % MAX_QUEUE;
+    }
 }
 
 static int udp_addr(struct addrinfo **addr, const char *host, const char *service, bool passive)
